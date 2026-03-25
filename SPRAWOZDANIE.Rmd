@@ -1,0 +1,1274 @@
+---
+title: "Projekt Zaliczeniowy BTC"
+author: "Jakub Morawski, Jarosław Kwiatkowski"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    extra_dependencies:
+      - float
+      - pdflscape
+      - array
+      - dcolumn
+      - booktabs
+      - placeins
+    fig_caption: yes
+    toc: true
+    toc_depth: 2
+    number_sections: true
+    keep_tex: true
+    
+fontsize: 11pt
+geometry: margin=2.5cm
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  fig.pos = "H",
+  out.extra = "",
+  message = FALSE,
+  warning = FALSE
+  )
+#install.packages(c("tidyverse", "e1071", "DescTools", "kableExtra", "lubridate"))
+library(tidyverse)  # Manipulacja danymi
+library(e1071)      # Skośność i kurtoza
+library(DescTools)  # Współczynnik Giniego
+library(kableExtra) # Formatowanie tabel
+library(knitr)
+library(lubridate)  # Obsługa dat (jeśli potrzebna)
+library(ggplot2)    # Wizualizacje
+
+if (!require("GGally")) install.packages("GGally")
+library(GGally)
+if (!require("tikzDevice")) install.packages("tikzDevice")
+library(tikzDevice)
+if (!require("gridExtra")) install.packages("gridExtra")
+library(gridExtra)
+if (!require("grid")) install.packages("grid")
+library(grid)
+if (!require("dplyr")) install.packages("dplyr")
+library(dplyr)
+if (!require("tseries")) install.packages("tseries")
+library(tseries)
+
+dane<-read.csv("BTCprice1.csv", sep=";", dec=",")
+#model<-lm(Price ~ VolumeM + USAvgKWHPrice + BTCCirculation + InflationRateUS + GoogleTrends + HasMuskMentioned + Difficulty , data)
+
+```
+
+
+
+# Wstęp
+
+**Kryptowaluty**, a zwłaszcza Bitcoin (BTC), stały się w ostatniej dekadzie jednym z najbardziej fascynujących i dynamicznych zjawisk finansowych. Ich wartość, charakteryzująca się wyjątkową zmiennością, stanowi wyzwanie dla tradycyjnych modeli ekonomicznych. Co napędza wahania cen najpopularniejszej kryptowaluty? Czy klucz leży w fundamentalnych wskaźnikach technologicznych, makroekonomicznych czynnikach globalnych, a może w irracjonalnych impulsach popkultury? To pytania, na które niniejszy projekt próbuje odpowiedzieć poprzez zastosowanie narzędzi ekonometrycznych.
+
+**Celem projektu** jest zbudowanie i kompleksowa weryfikacja modelu ekonometrycznego wyjaśniającego zmienność **średniej miesięcznej ceny Bitcoina**. Wykorzystując szeregi czasowe, analizujemy okres `1.08.2010 - 1.05.2025` (dane miesięczne).
+
+**Struktura sprawozdania** odzwierciedla pełny proces modelowania:  
+1. Prezentację i diagnostykę danych  
+2. Transformacje zapewniające stacjonarność szeregów  
+3. Dobór zmiennych metodą `wybrana_metoda`  
+4. Budowę modelu i jego weryfikację (testy RESET, Chowa, VIF, autokorelacji, normalności reszt)  
+5. Interpretację parametrów i ocenę trafności modelu  
+6. Prognozę ex-post z obliczeniem błędów  
+
+Poniższa analiza stanowi praktyczną ilustrację wyzwań w modelowaniu rynków krypto – od problemu niestacjonarności przez wpływ szoków medialnych po interpretację parametrów w środowisku ekstremalnej zmienności. Wyniki nie tylko weryfikują hipotezy o czynnikach wpływających na cenę BTC, ale także demonstrują siłę i ograniczenia ekonometrii w analizie nowych klas aktywów.
+
+# Prezentacja i opis wykorzystywanych danych
+
+## Opis
+
+Jako zmienne objaśniające uwzględniliśmy zarówno czynniki fundamentalne:  
+- `VolumeM` (miesięczny wolumen transakcji),  
+- `Difficulty` (trudność wydobycia bloków),  
+- `BTCCirculation` (liczbę BTC w obiegu),  
+- `USAvgKWHPrice` (średnią cenę energii elektrycznej w USA),  
+- `InflationRateUS` (stopę inflacji w USA),  
+jak i czynniki behawioralne:  
+- `GoogleTrends` (poziom wyszukiwań frazy "bitcoin" w wyszukiwarce Google),  
+- `HasMuskMentioned` (liczbę tweetów Elona Muska dotyczących kryptowalut).
+
+## Źródła
+
+**Źródła danych** zostały starannie dobrane pod kątem wiarygodności i kompletności:  
+- Dane technologiczne (cena, wolumen, trudność, podaż): [BitInfoCharts](https://bitinfocharts.com), [CoinWarz](https://www.coinwarz.com/mining/bitcoin/difficulty-chart)  
+- Dane ekonomiczne: Federal Reserve Bank of St. Louis (FRED)  
+- Aktywność medialna: API X.com (dane Muska), [Google Trends](https://trends.google.com)
+
+## Analiza podstawowych statystyk
+
+Kompleksowa analiza statystyk opisowych stanowi niezbędny etap przygotowania danych do modelowania ekonometrycznego. W przypadku niestabilnych rynków kryptowalut, identyfikacja:
+
+  * charakteru rozkładów zmiennych
+
+  * występowania wartości ekstremalnych
+
+  * stopnia zmienności danych
+
+  * potencjalnych problemów z normalnością rozkładu  
+
+pozwala na świadome podejmowanie decyzji dotyczących:
+
+  * Konieczności transformacji zmiennych (np. logarytmowanie)
+
+  * Stosowania metod odpornych na autokorelację i heteroskedastyczność
+
+  * Doboru odpowiednich testów statystycznych
+
+  * Interpretacji parametrów modelu  
+
+Pominięcie tej fazy diagnostycznej może prowadzić do błędnej specyfikacji modelu i nieprawidłowych wniosków ekonomicznych.
+
+```{r}
+desc_stats <- dane %>%
+  dplyr::select(-DMY) %>% 
+  dplyr::summarise(across(everything(), 
+                   list(Średnia = ~mean(., na.rm = TRUE),
+                        Mediana = ~median(., na.rm = TRUE),
+                        Odchylenie = ~stats::sd(., na.rm = TRUE),
+                        Wariancja = ~stats::var(., na.rm = TRUE),
+                        Skośność = ~e1071::skewness(., na.rm = TRUE),
+                        Kurtoza = ~e1071::kurtosis(., na.rm = TRUE),
+                        CV = ~sd(., na.rm = TRUE)/mean(., na.rm = TRUE)*100,
+                        Min = ~min(., na.rm = TRUE),
+                        Max = ~max(., na.rm = TRUE),
+                        IQR = ~stats::IQR(., na.rm = TRUE),
+                        MAD = ~stats::mad(., na.rm = TRUE),
+                        Giniego = ~DescTools::Gini(., na.rm = TRUE)
+                   ))) %>%
+  pivot_longer(cols = everything(), 
+               names_to = c("Zmienna", "Statystyka"), 
+               names_sep = "_") %>%
+  pivot_wider(names_from = "Statystyka", values_from = "value")
+
+formatted_stats <- desc_stats %>%
+  mutate(
+    across(c(Średnia, Mediana, Odchylenie, Wariancja, IQR, MAD), 
+           ~ formatC(., format = "f", digits = 4)),
+    across(c(Skośność, Kurtoza, Giniego), 
+           ~ formatC(., format = "f", digits = 3)),
+    CV = formatC(CV, format = "f", digits = 2),
+    across(c(Min, Max), 
+           ~ formatC(., format = "f", digits = 2))
+  )
+
+create_stat_table <- function(data, vars, title, digits_vec) {
+  data %>%
+    select(Zmienna, all_of(vars)) %>%
+    knitr::kable(
+      format = "latex",
+      booktabs = TRUE,
+      caption = title,
+      align = c("l", rep("r", length(vars))),
+      digits = digits_vec
+    ) %>%
+    kableExtra::kable_styling(
+      latex_options = c("striped", "hold_position")
+    )
+}
+
+```
+
+
+
+### Średnia i mediana
+
+Poniższa tabela przedstawia obliczone wartości średniej i mediany wszystkich analizowanych zmiennych.
+
+```{r}
+create_stat_table(
+  formatted_stats,
+  c("Średnia", "Mediana"),
+  "Miary tendencji centralnej",
+  c(NA, 4, 4)
+)
+```
+
+#### Obserwacje \newline
+
+Analizując miary tendencji centralnej dla zmiennych modelu, można zaobserwować następujące prawidłowości:
+
+1. **Cena Bitcoina (Price)** charakteryzuje się znaczną asymetrią - średnia wartość (16 412 USD) jest niemal czterokrotnie wyższa od mediany (4 231 USD), co wskazuje na występowanie okresów ekstremalnie wysokich wycen w analizowanym okresie.
+
+2. **Wolumen transakcji (VolumeM)** prezentuje szczególnie interesujący rozkład, gdzie średnia (347.43) znacznie przewyższa medianę (2.16), co sugeruje istnienie nielicznych okresów bardzo intensywnej aktywności handlowej.
+
+3. **Trudność wydobycia (Difficulty)** wykazuje kolosalną rozpiętość wartości (średnia: 17.5 bln, mediana: 1.5 bln), odzwierciedlając dynamiczny rozwój mocy obliczeniowej sieci Bitcoin.
+
+4. **Zmienne behawioralne** prezentują szczególnie wysoką zmienność:
+   - **Tweety Muska (HasMuskMentioned)** mają medianę równą 0 przy średniej 0.17, potwierdzając ich sporadyczny charakter
+   - **Wyszukiwania Google (GoogleTrends)** wykazują olbrzymią rozpiętość (średnia: 1 mld, mediana: 411 mln)
+
+#### Wnioski \newline
+
+Na podstawie analizy miar tendencji centralnej można sformułować następujące konkluzje:
+
+1. **Charakter rynku kryptowalut**:
+   - Ekstremalna zmienność cen i wolumenu transakcji wymaga zastosowania specjalnych metod analitycznych
+   - Tradycyjne miary statystyczne mogą nie w pełni oddawać specyfikę tego rynku
+
+2. **Implikacje dla modelowania**:
+   \vspace{0.2cm}
+   - Konieczność transformacji logarytmicznej zmiennych objaśniających
+   - Wskazane jest uwzględnienie efektów nieliniowych w specyfikacji modelu
+   - Należy rozważyć zastosowanie metod odpornych na wartości skrajne
+
+3. **Interpretacja ekonomiczna**:
+   \vspace{0.2cm}
+   - Czynniki fundamentalne wykazują większą stabilność niż behawioralne
+   - Mediana często lepiej reprezentuje typowe wartości niż średnia
+   - Wysoka zmienność czynników behawioralnych może mieć kluczowy wpływ na ceny
+
+\vspace{0.3cm}
+\textit{Dla pełniejszego obrazu zaleca się uzupełnienie tej analizy o:}
+\begin{itemize}
+\item Badanie rozkładów empirycznych poszczególnych zmiennych
+\item Analizę współzależności między zmiennymi
+\item Testy normalności rozkładów
+\end{itemize}
+
+\pagebreak
+
+### Odchylenie standardowe i wariancja
+
+Poniższa tabela przedstawia obliczone wartości odchylenia standardowego i wariancji rozkładu wszystkich analizowanych zmiennych.
+
+```{r}
+create_stat_table(
+  formatted_stats,
+  c("Odchylenie", "Wariancja"),
+  "Miary rozproszenia danych",
+  c(NA, 4, 4)
+)
+```
+
+#### Obserwacje \newline
+
+Analizując miary rozproszenia dla poszczególnych zmiennych, można zaobserwować następujące prawidłowości:
+
+1. **Cena Bitcoina (Price)** charakteryzuje się ekstremalnie wysokim odchyleniem standardowym (24 372 USD) i wariancją (594 mln), co potwierdza ogromną zmienność cenową tego aktywa.
+
+2. **Wolumen transakcji (VolumeM)** wykazuje kolosalne zróżnicowanie (odchylenie 3 409), znacznie przewyższające jego średnią wartość, co wskazuje na okresy skrajnie wysokiej i niskiej płynności.
+
+3. **Trudność wydobycia (Difficulty)** prezentuje niewyobrażalnie wysokie wartości wariancji ($\approx 8.13 \times 10^{23}$), co wynika z wykładniczego wzrostu mocy obliczeniowej sieci Bitcoin.
+
+4. **Zmienne makroekonomiczne**:
+   - Cena energii (USAvgKWHPrice) ma stosunkowo niskie odchylenie (0.0155), typowe dla stabilnych wskaźników ekonomicznych
+   - Inflacja (InflationRateUS) wykazuje umiarkowaną zmienność (odchylenie 1.9753)
+
+5. **Zmienne behawioralne**:
+   - Zmieenna określająca liczbę Tweetów Elona Muska (HasMuskMentioned) ma odchylenie (0.5771) ponad 3-krotnie wyższe od średniej
+   - Wyszukiwania Google (GoogleTrends) charakteryzują się gigantyczną wariancją $(\approx 1.99 \times 10^{18})$
+
+#### Wnioski
+
+1. **Charakterystyka ryzyka**:
+   \vspace{0.2cm}
+   - Ekstremalne wartości wariancji dla ceny BTC i wolumenu potwierdzają wysokie ryzyko inwestycyjne
+   - Niestabilność czynników behawioralnych może dominować nad fundamentami
+
+2. **Implikacje dla modelu**:
+   \vspace{0.2cm}
+   - Konieczność uwzględnienia heteroskedastyczności w specyfikacji modelu
+   - Wskazane jest zastosowanie transformacji logarytmicznej dla zmiennych o wysokiej wariancji
+   - Należy rozważyć użycie modeli GARCH dla zmiennej zależnej (Price)
+
+3. **Interpretacja ekonomiczna**:
+   \vspace{0.2cm}
+   - Stabilność zmiennych makro (energia, inflacja) kontrastuje z niestabilnością rynku kryptowalutowego
+   - Czynniki technologiczne (Difficulty) wykazują nieliniowy charakter wzrostu
+   - Wpływ czynników behawioralnych może mieć charakter impulsowy
+
+\vspace{0.3cm}
+\textit{Uwaga: Ze względu na ekstremalne wartości niektórych miar rozproszenia, zaleca się:}
+\begin{itemize}
+\item Weryfikację założeń o normalności rozkładów
+\item Analizę korelacji między zmiennymi objaśniającymi
+\item Stosowanie metod odpornych na wartości odstające
+\end{itemize}
+
+\pagebreak
+
+### Kurtoza
+
+Poniższa tabela przedstawia obliczone wartości kurtozy rozkładu wszystkich analizowanych zmiennych.
+
+```{r}
+create_stat_table(
+  formatted_stats,
+  "Kurtoza",
+  "Spłaszczenie rozkładu (kurtoza)",
+  c(NA, 3)
+)
+```
+
+#### Obserwacje \newline
+
+Analizując wartości kurtozy dla poszczególnych zmiennych, można zaobserwować następujące prawidłowości:
+
+1. **Cena Bitcoina (Price)** wykazuje umiarkowaną leptokurtyczność (kurtoza = 2.152), co wskazuje na nieco bardziej strome i "ciężkoogonowe" rozkłady niż rozkład normalny.
+
+2. **Wolumen transakcji (VolumeM)** charakteryzuje się ekstremalną leptokurtycznością (144.686), co sugeruje występowanie znacznej koncentracji wartości wokół średniej przy jednoczesnym występowaniu skrajnych wartości odstających.
+
+3. **Cena energii (USAvgKWHPrice)** jest prawie mezokurtyczna (0.158), co oznacza rozkład zbliżony do normalnego, typowy dla stabilnych wskaźników ekonomicznych.
+
+4. **Trudność wydobycia (Difficulty)** wykazuje wyraźną leptokurtyczność (2.899), co odzwierciedla okresowe skoki wartości związane z dostosowywaniem trudności wydobycia.
+
+5. **Liczba BTC w obiegu (BTCCirculation)** jest jedyną zmienną o ujemnej kurtozie (-0.081), co wskazuje na bardziej płaski rozkład niż normalny.
+
+6. **Zmienne behawioralne**:
+   - Tweety Muska (HasMuskMentioned) wykazują skrajną leptokurtyczność (30.485)
+   - Wyszukiwania Google (GoogleTrends) mają wysoką leptokurtyczność (8.625)
+
+#### Wnioski
+
+1. **Interpretacja kształtu rozkładów**:
+   \vspace{0.2cm}
+   - Większość zmiennych wykazuje leptokurtyczność, co sugeruje częstsze występowanie ekstremów niż w rozkładzie normalnym
+   - Ekstremalne wartości kurtozy dla wolumenu i tweetów Muska wskazują na impulsowy charakter tych zmiennych
+
+2. **Implikacje dla modelowania**:
+   \vspace{0.2cm}
+   - Wysoka kurtoza wymaga zastosowania metod odpornych na wartości odstające
+   - Konieczność transformacji zmiennych o skrajnej leptokurtyczności
+   - Należy rozważyć modele uwzględniające "grube ogony" rozkładów
+
+3. **Znaczenie ekonomiczne**:
+   \vspace{0.2cm}
+   - Leptokurtyczne rozkłady potwierdzają wysoką niestabilność rynku kryptowalut
+   - Stabilność cen energii kontrastuje z niestabilnością zmiennych rynkowych
+   - Impulsowy charakter czynników behawioralnych może dominować w krótkim okresie
+
+\vspace{0.3cm}
+\textit{Uwaga: W przypadku zmiennych o wysokiej kurtozie zaleca się:}
+\begin{itemize}
+\item Weryfikację normalności rozkładu testami statystycznymi
+\item Rozważenie transformacji Boxa-Coxa
+\item Analizę wartości odstających
+\end{itemize}
+
+\pagebreak
+
+### Skośność
+
+#### Obliczenie \newline
+
+Poniższa tabela przedstawia obliczone wartości współczynnika skośności rozkładu wszystkich analizowanych zmiennych.
+
+```{r}
+create_stat_table(
+  formatted_stats,
+  "Skośność",
+  "Współczynnik skośności rozkładu",
+  c(NA, 3)
+)
+```
+
+#### Obserwacje
+
+Analiza współczynników skośności dla badanych zmiennych ujawnia następujące prawidłowości:
+
+1. **Cena Bitcoina (Price)** wykazuje silną prawostronną asymetrię (skośność = 1.706), co potwierdza dominację okresów wzrostowych z rzadkimi, ale gwałtownymi spadkami.
+
+2. **Wolumen transakcji (VolumeM)** charakteryzuje się ekstremalną skośnością dodatnią (11.793), wskazując na występowanie nielicznych okresów anomalnie wysokiej aktywności handlowej.
+
+3. **Cena energii (USAvgKWHPrice)** prezentuje umiarkowaną skośność dodatnią (1.243), typową dla stabilnych wskaźników ekonomicznych z okresowymi wzrostami.
+
+4. **Trudność wydobycia (Difficulty)** również wykazuje silną asymetrię prawostronną (1.934), odzwierciedlającą stopniowy, ale nieliniowy wzrost mocy obliczeniowej sieci.
+
+5. **Liczba BTC w obiegu (BTCCirculation)** jest jedyną zmienną o ujemnej skośności (-0.991), co sugeruje okresowe zmniejszanie się podaży w analizowanym okresie.
+
+6. **Zmienne behawioralne**:
+   - Tweety Muska (HasMuskMentioned) wykazują bardzo silną skośność dodatnią (4.892)
+   - Wyszukiwania Google (GoogleTrends) mają wyraźną asymetrię prawostronną (2.627)
+
+#### Wnioski
+
+1. **Interpretacja ekonomiczna**:
+   \vspace{0.2cm}
+   - Dominacja dodatniej skośności potwierdza charakterystyczną dla rynku kryptowalunt nierównowagę między okresami hossy i bessy
+   - Ujemna skośność podaży BTC może wynikać z mechanizmu halvingu ograniczającego emisję nowych monet
+
+2. **Implikacje metodologiczne**:
+   \vspace{0.2cm}
+   - Wymóg transformacji zmiennych o wysokiej skośności przed modelowaniem
+   - Konieczność uwzględnienia nieliniowości w specyfikacji modelu
+   - Zalecenie stosowania testów statystycznych odpornych na asymetrię
+
+3. **Znaczenie dla prognozowania**:
+   \vspace{0.2cm}
+   - Asymetria rozkładów sugeruje różne właściwości statystyczne w okresach wzrostów i spadków
+   - Wysoka skośność czynników behawioralnych wskazuje na ich impulsowy charakter
+   - Należy rozważyć osobne modelowanie dla różnych faz rynkowych
+
+\vspace{0.3cm}
+\textit{Rekomendacje analityczne:}
+\begin{itemize}
+\item Dla zmiennych o skośności >1 zastosować transformację logarytmiczną
+\item Przeprowadzić analizę podprób dla okresów o różnej dynamice
+\item Uwzględnić w modelu efekty nieliniowe i interakcje
+\end{itemize}
+
+\pagebreak
+
+### Współczynnik zmienności (CV)
+
+Zgodnie z powszechnie przyjętą skalą klasyfikacji zmienności:
+
+  * CV < 15% - zmienność niska
+  * 15% < CV < 30% - zmienność umiarkowana
+  * 30% < CV < 100% - zmienność wysoka
+  * CV > 100%  - zmienność ekstremalna
+
+#### Obliczenie \newline
+
+Poniższa tabela przedstawia obliczone wartości współczynnika zmienności [%] dla wszystkich analizowanych zmiennych.
+
+```{r cv_table, results='asis'}
+create_stat_table(
+  formatted_stats,
+  c("CV"),
+  "Współczynnik zmienności (CV) [w procentach]",
+  c(NA, 2)
+)
+```
+
+#### Obserwacje
+
+Analiza współczynników zmienności (CV) dla badanych zmiennych ujawnia następujące prawidłowości:
+
+1. **Cena Bitcoina (Price)** charakteryzuje się bardzo wysoką zmiennością (CV=148.5\%), co jest typowe dla aktywów kryptowalutowych i odzwierciedla ich spekulacyjny charakter.
+
+2. **Wolumen transakcji (VolumeM)** wykazuje ekstremalną zmienność (CV=981.31\%), najwyższą ze wszystkich analizowanych zmiennych, wskazując na ogromne różnice w aktywności handlowej między okresami.
+
+3. **Cena energii (USAvgKWHPrice)** jest najbardziej stabilną zmienną (CV=10.86\%), co potwierdza jej charakter jako wskaźnika makroekonomicznego.
+
+4. **Trudność wydobycia (Difficulty)** również cechuje wysoka zmienność (CV=163.12\%), odzwierciedlająca dynamiczne dostosowania w sieci Bitcoin.
+
+5. **Zmienne behawioralne**:
+   - Tweety Muska (HasMuskMentioned) wykazują skrajną zmienność (CV=342.4\%)
+   - Wyszukiwania Google (GoogleTrends) mają bardzo wysoką zmienność (CV=139.58\%)
+
+6. **Podaż BTC (BTCCirculation)** jest względnie stabilna (CV=28.7\%), co wynika z przewidywalnego mechanizmu emisji.
+
+#### Wnioski
+
+1. **Interpretacja ekonomiczna**:
+   \vspace{0.2cm}
+   - Ekstremalna zmienność rynku kryptowalutowego kontrastuje ze stabilnością tradycyjnych wskaźników ekonomicznych
+   - Czynniki behawioralne są bardziej zmienne niż fundamentalne
+   - Stabilność podaży BTC potwierdza przewidywalność protokołu Bitcoin
+
+2. **Implikacje metodologiczne**:
+   \vspace{0.2cm}
+   - Konieczność zastosowania modeli uwzględniających heteroskedastyczność
+   - Wskazane jest użycie ważonych estymatorów dla zmiennych o różnej zmienności
+   - Należy rozważyć osobne modelowanie okresów wysokiej i niskiej zmienności
+
+3. **Znaczenie dla zarządzania ryzykiem**:
+   \vspace{0.2cm}
+   - Wysoka zmienność wymaga odpowiednich strategii hedgingowych
+   - Czynniki o CV>100\% mogą dominować w krótkoterminowych fluktuacjach cen
+   - Stabilne zmienne lepiej wyjaśniają trendy długoterminowe
+
+\vspace{0.3cm}
+\textit{Rekomendacje analityczne:}
+\begin{itemize}
+\item Dla zmiennych o CV>100\% zastosować modele GARCH/ARCH
+\item Przeprowadzić analizę przedziałową dla różnych poziomów zmienności
+\item Uwzględnić interakcje między zmiennymi o różnej zmienności
+\end{itemize}
+
+\pagebreak
+
+### Minimum i maksimum
+
+#### Obliczenie \newline
+
+Poniższa tabela przedstawia największe i największe wartości wszystkich analizowanych zmiennych.
+
+```{r}
+create_stat_table(
+  formatted_stats,
+  c("Min", "Max"),
+  "Wartości minimalne i maksymalne",
+  c(NA, 2, 2)
+  )
+```
+
+#### Obserwacje
+
+Analiza wartości ekstremalnych dla badanych zmiennych ujawnia następujące prawidłowości:
+
+1. **Cena Bitcoina (Price)** wykazuje niezwykły zakres wahań od \$0.10 do \$103,293.40, dokumentując zarówno początkową fazę rozwoju (2010 r.), jak i okresy szczytowych wycen.
+
+2. **Wolumen transakcji (VolumeM)** prezentuje ekstremalną rozpiętość od 0.06 do 43,700, odzwierciedlającą zarówno okresy minimalnej aktywności, jak i gigantyczne wolumeny handlowe.
+
+3. **Cena energii (USAvgKWHPrice)** charakteryzuje się wąskim zakresem (0.12-0.18 USD/kWh), typowym dla stabilnych wskaźników infrastrukturalnych.
+
+4. **Trudność wydobycia (Difficulty)** pokazuje astronomiczny wzrost od 112.38 do 120.975 bln, ilustrujący ewolucję sieci Bitcoin od początków do obecnej skali.
+
+5. **Zmienne behawioralne**:
+   - Tweety Muska (HasMuskMentioned) obejmują zakres od 0 do 5 wpisów miesięcznie
+   - Wyszukiwania Google (GoogleTrends) zmieniają się od 497,700 do 9.35 mld
+
+6. **Podaż BTC (BTCCirculation)** wzrosła z 3.56 mln do 19.86 mln BTC, zgodnie z przewidywalnym harmonogramem emisji.
+
+#### Wnioski
+
+1. **Interpretacja historyczna**:
+   \vspace{0.2cm}
+   - Ekstremalne wartości minimalne dokumentują początkową fazę rozwoju rynku krypto
+   - Wartości maksymalne odzwierciedlają okresy szczytowego zainteresowania i hossy
+
+2. **Implikacje metodologiczne**:
+   \vspace{0.2cm}
+   - Konieczność uwzględnienia nieliniowości i efektów progowych
+   - Wskazane jest zastosowanie transformacji zmniejszających wpływ wartości skrajnych
+   - Należy rozważyć analizę przedziałową dla skrajnie różnych warunków rynkowych
+
+3. **Znaczenie dla modelowania**:
+   \vspace{0.2cm}
+   - Wartości ekstremalne mogą wymagać specyficznego podejścia do estymacji
+   - Należy testować stabilność parametrów dla różnych przedziałów wartości
+   - Wskazane jest uwzględnienie zmiennych dummy dla okresów ekstremalnych
+
+\vspace{0.3cm}
+\textit{Rekomendacje analityczne:}
+\begin{itemize}
+\item Przeprowadzić analizę outlierów i rozważyć ich ewentualną eliminację
+\item Zastosować transformacje logarytmiczne dla zmiennych o dużych rozpiętościach
+\item Rozważyć podział próby na podokresy o zbliżonych charakterystykach
+\end{itemize}
+
+\pagebreak
+
+### Rozstęp międzykwartylowy (IQR)
+
+#### Obliczenie \newline
+
+Poniższa tabela przedstawia obliczone wartości rozstępów międzykwartylowych wszystkich analizowanych zmiennych.
+
+```{r}
+create_stat_table(
+  formatted_stats,
+  "IQR",
+  "Rozstęp międzykwartylowy (IQR)",
+  c(NA, 4)
+  )
+```
+
+#### Obserwacje
+
+Analiza rozstępów międzykwartylowych (IQR) dla badanych zmiennych ujawnia następujące prawidłowości:
+
+1. **Cena Bitcoina (Price)** charakteryzuje się bardzo szerokim IQR (25,032.23), co potwierdza ogromną zmienność cen nawet w środkowych 50% rozkładu.
+
+2. **Wolumen transakcji (VolumeM)** wykazuje stosunkowo wąski IQR (3.82) w porównaniu do ekstremalnych wartości minimalnych i maksymalnych, co sugeruje koncentrację większości obserwacji w wąskim zakresie.
+
+3. **Cena energii (USAvgKWHPrice)** ma wyjątkowo wąski IQR (0.009), co potwierdza jej stabilność jako zmiennej makroekonomicznej.
+
+4. **Trudność wydobycia (Difficulty)** prezentuje astronomiczny IQR (21.56 bln), odzwierciedlający szybki rozwój mocy obliczeniowej sieci.
+
+5. **Zmienne behawioralne**:
+   - Tweety Muska (HasMuskMentioned) mają IQR=0, co wskazuje na brak zmienności w środkowych 50% danych
+   - Wyszukiwania Google (GoogleTrends) wykazują bardzo szeroki IQR (1.05 mld)
+
+6. **Podaż BTC (BTCCirculation)** ma umiarkowany IQR (6.18 mln), zgodny z przewidywalnym harmonogramem emisji.
+
+#### Wnioski
+
+1. **Interpretacja statystyczna**:
+   \vspace{0.2cm}
+   - Wysokie wartości IQR dla ceny i trudności wydobycia potwierdzają ich dynamiczny charakter
+   - Zerowy IQR dla tweetów Muska wskazuje na ich dyskretny, impulsowy charakter
+   - Niskie IQR cen energii potwierdza jej stabilność
+
+2. **Implikacje metodologiczne**:
+   \vspace{0.2cm}
+   - Zmienne o wysokim IQR wymagają specjalnych metod analitycznych
+   - Należy rozważyć analizę oddzielnie dla każdego kwartyla
+   - Wskazane jest zastosowanie metod odpornych na ekstremy
+
+3. **Znaczenie praktyczne**:
+   \vspace{0.2cm}
+   - Szerokie IQR zmiennych rynkowych wymaga elastycznych strategii inwestycyjnych
+   - Wąskie IQR zmiennych makro sugeruje ich ograniczoną przydatność do krótkoterminowego prognozowania
+   - Zerowy IQR tweetów Muska potwierdza ich nieregularny wpływ na rynek
+
+\vspace{0.3cm}
+\textit{Rekomendacje analityczne:}
+\begin{itemize}
+\item Dla zmiennych o IQR=0 rozważyć modelowanie dyskretne
+\item Dla szerokich IQR zastosować transformacje normalizujące
+\item Przeprowadzić analizę percentylową dla pełniejszego obrazu rozkładów
+\end{itemize}
+
+\pagebreak
+
+### Medianowe odchylenie bezwględne (MAD)
+
+#### Obliczenie \newline
+
+Poniższa tabela przedstawia obliczone wartości medianowego odchylenia bezwzględnego wszystkich analizowanych zmiennych.
+
+```{r}
+create_stat_table(
+  formatted_stats,
+  "MAD",
+  "Medianowe odchylenie bezwzględne (MAD)",
+  c(NA, 4)
+  )
+```
+
+#### Obserwacje
+
+Analiza medianowego odchylenia bezwzględnego (MAD) dla badanych zmiennych ujawnia następujące prawidłowości:
+
+1. **Cena Bitcoina (Price)** wykazuje wysoką odporną miarę zmienności (MAD=6,266.13), co potwierdza znaczną rozpiętość cen nawet po wyeliminowaniu wpływu wartości skrajnych.
+
+2. **Wolumen transakcji (VolumeM)** charakteryzuje się stosunkowo niskim MAD (1.85), co wskazuje na koncentrację większości obserwacji w pobliżu mediany przy jednoczesnych ekstremalnych wartościach odstających.
+
+3. **Cena energii (USAvgKWHPrice)** prezentuje minimalne MAD (0.0059), potwierdzając jej stabilność jako wskaźnika makroekonomicznego.
+
+4. **Trudność wydobycia (Difficulty)** ma ekstremalnie wysokie MAD (2.29 bln), odzwierciedlające ogromną skalę zmian w mocy obliczeniowej sieci.
+
+5. **Zmienne behawioralne**:
+   - Tweety Muska (HasMuskMentioned) mają MAD=0, co wskazuje na brak zmienności wokół mediany
+   - Wyszukiwania Google (GoogleTrends) wykazują bardzo wysokie MAD (537.8 mln)
+
+6. **Podaż BTC (BTCCirculation)** prezentuje umiarkowane MAD (3.66 mln), zgodne z przewidywalnym charakterem emisji nowych monet.
+
+#### Wnioski
+
+1. **Interpretacja statystyczna**:
+   \vspace{0.2cm}
+   - Wysokie wartości MAD dla ceny i trudności wydobycia potwierdzają ich inherentną zmienność
+   - Zerowe MAD tweetów Muska dokumentuje ich dyskretny charakter
+   - Niskie MAD cen energii wzmacnia jej przydatność jako stabilnej zmiennej objaśniającej
+
+2. **Zalety MAD jako miary**:
+   \vspace{0.2cm}
+   - Odporność na wartości odstające w porównaniu do odchylenia standardowego
+   - Lepsza reprezentacja typowej zmienności dla rozkładów o grubych ogonach
+   - Spójność z medianą jako miarą centralną
+
+3. **Implikacje dla modelowania**:
+   \vspace{0.2cm}
+   - Zmienne o wysokim MAD wymagają specjalnych technik estymacji
+   - Należy rozważyć ważenie obserwacji odwrotnie proporcjonalnie do MAD
+   - Wskazane jest testowanie modeli na podzbiorach danych wyznaczonych przez MAD
+
+\vspace{0.3cm}
+\textit{Rekomendacje analityczne:}
+\begin{itemize}
+\item Dla zmiennych o MAD=0 zastosować modele dyskretne lub dychotomiczne
+\item Dla wysokich MAD wykorzystać metody statystyki robustowej
+\item Przeprowadzić analizę wrażliwości dla różnych poziomów obcięcia rozkładów
+\end{itemize}
+
+\pagebreak
+
+### Współczynnik Giniego
+
+Zgodnie z powszechnie przyjętą skalą klasyfikacji wartości współczynnika Giniego:
+
+  * 0 - 0.3: niska koncentracja
+  * 0.3 - 0.6: umiarkowana koncentracja
+  * 0.6 - 0.8: wysoka koncentracja
+  * 0.8 - 1: ekstremalna koncentracja
+
+#### Obliczenie \newline
+
+Poniższa tabela przedstawia obliczone wartości współczynnika współczynnika koncentracji Giniego wszystkich analizowanych zmiennych.
+
+```{r}
+create_stat_table(
+  formatted_stats,
+  "Giniego",
+  "Współczynnik koncentracji Giniego",
+  c(NA, 3)
+  )
+```
+
+#### Obserwacje
+
+Analiza współczynnika Giniego dla badanych zmiennych ujawnia następujące prawidłowości:
+
+1. **Cena Bitcoina (Price)** wykazuje bardzo wysoką koncentrację (G=0.708), co wskazuje na skrajną nierównomierność rozkładu wartości w czasie.
+
+2. **Wolumen transakcji (VolumeM)** charakteryzuje się niemal maksymalną koncentracją (G=0.989), potwierdzając występowanie nielicznych okresów ekstremalnie wysokiej aktywności.
+
+3. **Cena energii (USAvgKWHPrice)** prezentuje minimalną koncentrację (G=0.055), typową dla stabilnych wskaźników ekonomicznych o równomiernym rozkładzie.
+
+4. **Trudność wydobycia (Difficulty)** ma wysoką wartość Giniego (0.742), odzwierciedlającą nieliniowy, skumulowany charakter wzrostu mocy obliczeniowej.
+
+5. **Zmienne behawioralne**:
+   - Tweety Muska (HasMuskMentioned) wykazują ekstremalną koncentrację (G=0.922)
+   - Wyszukiwania Google (GoogleTrends) mają wysoką koncentrację (G=0.624)
+
+6. **Podaż BTC (BTCCirculation)** charakteryzuje się umiarkowaną koncentracją (G=0.156), zgodną z przewidywalnym harmonogramem emisji.
+
+#### Wnioski
+
+1. **Interpretacja ekonomiczna**:
+   \vspace{0.2cm}
+   - Wysokie wartości Giniego potwierdzają nierównomierny charakter rozwoju rynku krypto
+   - Niska koncentracja cen energii wzmacnia jej rolę jako stabilnego wskaźnika
+   - Ekstremalne wartości dla wolumenu i tweetów wskazują na ich impulsowy charakter
+
+2. **Implikacje metodologiczne**:
+   \vspace{0.2cm}
+   - Zmienne o G>0.6 wymagają specjalnych metod analitycznych
+   - Konieczność transformacji zmiennych o wysokiej koncentracji
+   - Wskazane jest modelowanie oddzielne dla okresów koncentracji wartości
+
+3. **Znaczenie dla zarządzania ryzykiem**:
+   \vspace{0.2cm}
+   - Wysoka koncentracja wskazuje na okresowe "skupiska" ekstremów
+   - Należy rozwijać strategie odporne na nierównomierność rozkładów
+   - Wskazane jest stosowanie analizy kwantylowej
+
+\vspace{0.3cm}
+\textit{Rekomendacje analityczne:}
+\begin{itemize}
+\item Dla zmiennych o G>0.8 zastosować analizę przedziałową
+\item Przeprowadzić testy nierównomierności rozkładów
+\item Uwzględnić efekty nieliniowe w modelowaniu
+\end{itemize}
+
+\pagebreak
+
+## Analiza współczynników korelacji między zmiennymi
+
+```{r}
+create_cor_table <- function(cor_matrix, title, digits = 2) {
+  as.data.frame(cor_matrix) %>%
+    tibble::rownames_to_column("Zmienna") %>%
+    knitr::kable(
+      format = "latex",
+      booktabs = TRUE,
+      caption = title,
+      align = c("l", rep("c", ncol(cor_matrix))),
+      digits = digits,
+      linesep = ""
+    ) %>%
+    kableExtra::kable_styling(
+      latex_options = c("hold_position", "scale_down"),
+      font_size = 9,
+      full_width = FALSE
+    ) %>%
+    kableExtra::column_spec(1, bold = TRUE)
+}
+```
+
+### Macierz współczynników
+
+```{r}
+cor_mat <- cor(dane[-1])
+```
+
+#### Wyświetlenie tabeli
+
+Poniższa tabela przedstawia macierz korelacji wszystkich zmiennych
+
+```{r}
+create_cor_table(cor_mat, "Macierz korelacji zmiennych", digits = 4)
+```
+
+#### Obserwacje
+
+Analiza macierzy korelacji ujawnia następujące istotne zależności:
+
+1. **Silne korelacje dodatnie** (0.7-0.9):
+   - Cena Bitcoina (Price) jest silnie skorelowana z:
+     * Trudnością wydobycia (Difficulty, 0.914)
+     * Ceną energii w USA (USAvgKWHPrice, 0.800)
+   - Cena energii (USAvgKWHPrice) i trudność wydobycia (Difficulty) wykazują niemal funkcjonalną zależność (0.917)
+
+2. **Umiarkowane korelacje** (0.4-0.7):
+   - Podaż BTC (BTCCirculation) wykazuje umiarkowaną korelację z:
+     * Ceną (0.600)
+     * Ceną energii (0.639)
+   - Inflacja w USA (InflationRateUS) jest zauważalnie skorelowana z ceną energii (0.472)
+
+3. **Słabe korelacje** (<0.4):
+   - Wszystkie zmienne behawioralne (HasMuskMentioned, GoogleTrends) wykazują słabe korelacje z ceną BTC
+   - Wolumen transakcji (VolumeM) jest praktycznie nieskorelowany z innymi zmiennymi
+
+4. **Ciekawe anomalie**:
+   - GoogleTrends wykazuje ujemną korelację z ceną energii (-0.071) i trudnością wydobycia (-0.045)
+   - Korelacja między tweetami Muska a wyszukiwaniami Google (0.488) jest wyższa niż ich korelacje z ceną BTC
+
+#### Wnioski
+
+1. **Interpretacja ekonomiczna**:
+   \vspace{0.2cm}
+   - Silne korelacje cen energii i trudności wydobycia z ceną BTC sugerują dominację czynników fundamentalnych
+   - Słabe korelacje zmiennych behawioralnych wskazują na ich drugorzędne znaczenie w długim okresie
+   - Niska korelacja wolumenu z ceną podważa niektóre teorie techniczne
+
+2. **Implikacje dla modelowania**:
+   \vspace{0.2cm}
+   - Wysoka współliniowość cen energii i trudności wydobycia (VIF>5) wymaga selekcji zmiennych
+   - Zmienne behawioralne mogą wymagać nieliniowej specyfikacji w modelu
+   - Wskazane jest uwzględnienie opóźnień dla zmiennych makro
+
+3. **Rekomendacje analityczne**:
+   \vspace{0.2cm}
+   \begin{itemize}
+   \item Zastosować analizę głównych składowych dla zmiennych silnie skorelowanych
+   \item Przeprowadzić testy przyczynowości Grangera dla kluczowych zależności
+   \item Rozważyć modele nieliniowe dla zmiennych behawioralnych
+   \end{itemize}
+
+4. **Ostrzeżenia**:
+   \vspace{0.2cm}
+   - Korelacja nie implikuje przyczynowości
+   - Wysokie wartości mogą wynikać ze wspólnego trendu czasowego
+   - Należy zbadać autokorelacje reszt
+
+\vspace{0.3cm}
+\textbf{Kluczowe zależności w postaci grafu:}
+\begin{verbatim}
+[USAvgKWHPrice] ←→ [Difficulty] → [Price]
+      ↑               ↑             ↑
+   [Inflation]     [BTC Supply]  [Behavioral]
+\end{verbatim}
+
+
+
+## Wykresy zależności między zmiennymi
+
+### Wyświetlenie wykresów
+
+```{r}
+# Instalacja i ładowanie pakietów
+if (!require("ggplot2")) install.packages("ggplot2")
+if (!require("gridExtra")) install.packages("gridExtra")
+if (!require("dplyr")) install.packages("dplyr")
+
+library(ggplot2)
+library(gridExtra)
+library(dplyr)
+
+generate_and_show_plots <- function(data, variables) {
+  # Generuj wszystkie kombinacje par zmiennych
+  var_pairs <- combn(variables, 2, simplify = FALSE)
+  
+  # Generuj wykresy w grupach po 4
+  for (i in seq(1, length(var_pairs), by = 4)) {
+    current_pairs <- var_pairs[i:min(i+3, length(var_pairs))]
+    
+    plot_list <- list()
+    
+    for (j in seq_along(current_pairs)) {
+      pair <- current_pairs[[j]]
+      var_x <- pair[1]
+      var_y <- pair[2]
+      
+      p <- ggplot(data, aes(x = .data[[var_x]], y = .data[[var_y]])) +
+        geom_point(alpha = 0.5, color = "steelblue") +
+        geom_smooth(method = "lm", color = "red", se = FALSE) +
+        labs(x = var_x, y = var_y,
+             title = paste("Zależność:", var_x, "vs", var_y)) +
+        theme_minimal() +
+        theme(plot.title = element_text(size = 10, hjust = 0.5),
+              axis.title = element_text(size = 8))
+      
+      plot_list[[j]] <- p
+    }
+    
+    # Wyświetl 4 wykresy na raz
+    grid.arrange(grobs = plot_list, ncol = 2)
+  }
+}
+
+# Przykład użycia:
+variables <- c("Price", "VolumeM", "USAvgKWHPrice", "Difficulty", 
+               "BTCCirculation", "InflationRateUS", "HasMuskMentioned", 
+               "GoogleTrends")
+generate_and_show_plots(dane, variables)
+```
+
+### Analiza wykresów
+
+- **Price vs VolumeM**: Widać pozytywną korelację – wyższa cena powiązana jest z większym wolumenem. Relacja jednak nie jest idealnie liniowa.
+- **Price vs USAvgKWHPrice**: Niewielka dodatnia zależność; cena energii może mieć umiarkowany wpływ na cenę aktywa.
+- **Price vs Difficulty**: Bardzo silna pozytywna korelacja – większa trudność wydobycia powiązana z wyższą ceną.
+- **Price vs BTCCirculation**: Korelacja dodatnia, lecz słabsza; większa podaż w obiegu współwystępuje z wyższymi cenami.
+- **Price vs InflationRateUS**: Zależność niejednoznaczna; brak wyraźnego trendu.
+- **Price vs HasMuskMentioned**: Delikatna dodatnia zależność, ale z dużym rozrzutem – możliwy wpływ medialny, ale słaby.
+- **Price vs GoogleTrends**: Widoczna dodatnia korelacja – większe zainteresowanie w Google współwystępuje z wyższymi cenami.
+
+- **VolumeM vs USAvgKWHPrice**: Brak wyraźnej zależności – wolumen nie reaguje istotnie na cenę energii.
+- **VolumeM vs Difficulty**: Silna dodatnia zależność – większa trudność może zwiększać aktywność.
+- **VolumeM vs BTCCirculation**: Lekka zależność dodatnia – większa cyrkulacja łączy się z wyższym wolumenem.
+- **VolumeM vs InflationRateUS**: Brak widocznej korelacji.
+- **VolumeM vs HasMuskMentioned**: Zależność słaba, ale może być lekki trend wzrostowy.
+- **VolumeM vs GoogleTrends**: Wyraźna dodatnia zależność – większe zainteresowanie przekłada się na większy obrót.
+
+- **USAvgKWHPrice vs Difficulty**: Zależność bliska zeru – brak widocznego wpływu ceny energii na trudność.
+- **USAvgKWHPrice vs BTCCirculation**: Brak wyraźnej zależności.
+- **USAvgKWHPrice vs InflationRateUS**: Słaba dodatnia korelacja – może istnieć pośredni wpływ inflacji na koszty energii.
+- **USAvgKWHPrice vs HasMuskMentioned**: Bez zauważalnego trendu.
+- **USAvgKWHPrice vs GoogleTrends**: Również brak wyraźnego wzoru.
+
+- **Difficulty vs BTCCirculation**: Silna dodatnia zależność – im więcej BTC w obiegu, tym trudniej je wydobyć.
+- **Difficulty vs InflationRateUS**: Brak korelacji – czynniki wewnętrzne sieci dominują.
+- **Difficulty vs HasMuskMentioned**: Nie obserwuje się wyraźnej zależności.
+- **Difficulty vs GoogleTrends**: Widoczna korelacja – trudność wydobycia rośnie z zainteresowaniem publicznym.
+
+- **BTCCirculation vs InflationRateUS**: Brak zależności.
+- **BTCCirculation vs HasMuskMentioned**: Korelacja niewielka, raczej przypadkowa.
+- **BTCCirculation vs GoogleTrends**: Lekka dodatnia zależność – większe zainteresowanie może prowadzić do większej cyrkulacji.
+
+- **InflationRateUS vs HasMuskMentioned**: Brak widocznego związku.
+- **InflationRateUS vs GoogleTrends**: Nie obserwuje się korelacji.
+
+- **HasMuskMentioned vs GoogleTrends**: Zależność dodatnia – więcej wzmiankowań Elona Muska często pokrywa się ze wzrostem wyszukiwań.
+
+
+\pagebreak
+
+# Przygotowanie danych
+
+## Stacjonarność
+
+### Badanie stacjonarności zmiennych
+
+```{r}
+# Funkcja wykonująca testy ADF i KPSS dla jednej zmiennej
+test_stacjonarnosci <- function(x, nazwa_zmiennej) {
+  # Test ADF (H0: zmienna niestacjonarna)
+  adf <- adf.test(na.omit(x))
+  # Test KPSS (H0: zmienna stacjonarna)
+  kpss <- kpss.test(na.omit(x))
+  
+  data.frame(
+    Zmienna = nazwa_zmiennej,
+    Test = c("ADF", "KPSS"),
+    Statystyka = c(adf$statistic, kpss$statistic),
+    p_value = c(adf$p.value, kpss$p.value),
+    Wniosek = c(
+      ifelse(adf$p.value < 0.05, "Stacjonarna", "Niestacjonarna"),
+      ifelse(kpss$p.value > 0.05, "Stacjonarna", "Niestacjonarna")
+    ),
+    stringsAsFactors = FALSE
+  )
+}
+
+# Lista zmiennych do testowania
+zmienne <- c("Price", "VolumeM", "USAvgKWHPrice", "Difficulty", 
+             "BTCCirculation", "InflationRateUS", "HasMuskMentioned", "GoogleTrends")
+
+# Wykonanie testów dla wszystkich zmiennych
+wyniki <- lapply(zmienne, function(zm) {
+  test_stacjonarnosci(dane[[zm]], zm)
+}) %>% 
+  bind_rows() %>% 
+  mutate(
+    p_value = format.pval(p_value, digits = 3, eps = 0.001),
+    Statystyka = round(Statystyka, 3)
+  )
+
+# Formatowanie tabeli dla RMarkdown
+kable(wyniki, 
+      caption = "Wyniki testów stacjonarności ADF i KPSS dla zmiennych modelu",
+      col.names = c("Zmienna", "Test", "Statystyka testu", "p-value", "Wniosek"),
+      align = c("l", "c", "c", "c", "l"),
+      format.args = list(decimal.mark = ",")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), 
+                full_width = FALSE,
+                font_size = 10) %>%
+  pack_rows(index = table(factor(wyniki$Zmienna, levels = unique(wyniki$Zmienna))))
+```
+
+
+
+### Eliminacja niestacjonarności
+
+dużo rzeczy
+
+
+
+## Logarytmowanie
+
+### Wybór zmiennej do zlogarytmowania
+
+### Dodanie kolumny zmiennej logarytmowanej
+
+### Weryfikacja
+
+
+
+## Eliminacja wartości odstających
+
+bla bla bla na.rm i rm.outliers i już
+
+
+
+# Zastosowanie metod doboru zmiennych do modelu
+
+
+
+## Metoda Hellwiga
+
+bim bam bom dużo liczenia i podpunktów
+
+
+
+## Metoda krokowa wsteczna
+
+bim bam bom dużo liczenia i podpunktów znowuuuu
+
+
+
+# Budowa modelu
+
+
+
+## Podział danych na część uczącą i testową
+
+cośtam trzeba o tym powiedzieć i napisać
+
+
+
+## Budowa modelu regresji liniowej na danych z części uczącej
+
+podać kod czy coś
+
+
+
+# Weryfikacja poprawności modelu
+
+
+
+## Badanie normalności rozkładu reszt
+
+dużo danych więc okej, dodać testy i nie musi przechodzic przez testy żeby było ściśle super
+
+
+
+## Testowanie autokorelacji
+
+
+
+## Badanie heteroskedastyczności
+
+
+
+### Test Goldfelda-Quandta
+
+
+
+#### Obliczenie
+
+bum
+
+#### Obserwacje
+
+bum
+
+#### Wnioski
+
+bum
+
+
+
+### Test Breuscha-Pagana
+
+
+
+#### Obliczenie
+
+bum
+
+#### Obserwacje
+
+bum
+
+#### Wnioski
+
+bum
+
+
+
+### Test White'a
+
+
+
+#### Obliczenie
+
+bum
+
+#### Obserwacje
+
+bum
+
+#### Wnioski
+
+bum
+
+
+
+## Testowanie współliniowości (VIF)
+
+
+
+## Testowanie stabilności parametrów modelu
+
+
+
+### Test Chowa
+
+
+
+#### Obliczenie
+
+bum
+
+#### Obserwacje
+
+bum
+
+#### Wnioski
+
+bum
+
+
+
+## Testowanie stabilności postaci analitycznej modelu
+
+
+
+### Test Ramsey'a RESET
+
+#### Obliczenie
+
+bum
+
+#### Obserwacje
+
+bum
+
+#### Wnioski
+
+bum
+
+
+
+### Test liczby serii
+
+#### Obliczenie
+
+bum
+
+#### Obserwacje
+
+bum
+
+#### Wnioski
+
+bum
+
+
+
+## Badanie efektu katalizy
+
+bum bum
+
+
+
+##  Badanie koincydencji
+
+
+
+# Prezentacja ostatecznej postaci modelu i jego ocena
+
+
+
+## Ocena istotności zmiennych
+
+
+
+### Test t-Studenta
+
+#### Obliczenie
+
+bum
+
+#### Obserwacje
+
+bum
+
+#### Wnioski
+
+bum
+
+
+
+### Test Walda
+
+#### Obliczenie
+
+bum
+
+#### Obserwacje
+
+bum
+
+#### Wnioski
+
+bum
+
+
+
+## Ocena współczynnika determinacji
+
+bum bum
+
+
+
+## Interpretacja parametrów modelu
+
+tu będzie dużo pisania i sporo podpunktów
+
+
+
+# Prognoza
+
+
+
+## Przeprowadzenie prognozy punktowej
+
+
+
+## Sprawdzenie błędu prognozy EX POST
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
