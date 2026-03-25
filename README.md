@@ -9,7 +9,7 @@
   transformacje Boxa-Coxa
   testy diagnostyczne (Breusch-Pagan, White, VIF, Chow, RESET)
 
-**Problem**
+**Problem**  
 Konieczność zbudowania i kompleksowej weryfikacji modelu ekonometrycznego wyjaśniającego zmienność średniej miesięcznej ceny Bitcoina w okresie 08.2010–05.2025, z uwzględnieniem wyzwań typowych dla rynków kryptowalut: ekstremalnej niestacjonarności szeregów, heteroskedastyczności, autokorelacji reszt oraz wpływu czynników fundamentalnych i behawioralnych.
 
 **Rozwiązanie**
